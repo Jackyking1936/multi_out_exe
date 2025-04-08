@@ -603,7 +603,8 @@ class MainApp(QWidget):
 
         if inv_res.is_success:
             for inv in inv_res.data:
-                inventories[inv.stock_no] = inv
+                if inv.order_type == OrderType.Stock:
+                    inventories[inv.stock_no] = inv
             self.logger.info(f"庫存股票已抓取，共{len(inventories)}檔")
         else:
             self.logger.error(f"Inventory fetch error, message: {inv_res.message}")
