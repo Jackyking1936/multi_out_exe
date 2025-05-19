@@ -18,7 +18,7 @@ class main_ui(QWidget):
         # 製作上下排列layout上為庫存表，下為log資訊
         layout = QVBoxLayout()
         # 庫存表表頭
-        self.table_header = ['股票名稱', '股票代號', '昨日股數', '庫存均價', '基準價', '現價', '基準漲幅(%)', '出場階段', '觸發股數', '成交股數']
+        self.table_header = ['均線之下', '股票名稱', '股票代號', '昨日股數', '庫存均價', '基準價', '現價', '基準漲幅(%)', '出場階段', '觸發股數', '程式成交', '手動成交']
         
         self.tablewidget = QTableWidget(0, len(self.table_header))
         self.tablewidget.setHorizontalHeaderLabels([f'{item}' for item in self.table_header])
@@ -46,7 +46,47 @@ class main_ui(QWidget):
         label_dummy = QLabel("   ")
         layout_table_read.addWidget(label_dummy, 3)
 
-        # 整個設定區layout
+        # MA參數設定區layout
+        layout_MA = QGridLayout()
+
+        # 均線設定區參數layout
+        label_MA = QLabel('均線參數設定')
+        label_MA.setStyleSheet(f"QLabel {{ font-size: {title_font_size}; font-weight: bold; }}")
+        label_MA.setAlignment(Qt.AlignLeft)
+        layout_MA.addWidget(label_MA, 0, 0)
+
+        label_MA_day = QLabel('\t均線天數:')
+        layout_MA.addWidget(label_MA_day, 1, 0)
+        self.lineEdit_default_MA_day = QLineEdit()
+        self.lineEdit_default_MA_day.setText(str(60))
+        self.lineEdit_default_MA_day.setMaximumWidth(200)
+        layout_MA.addWidget(self.lineEdit_default_MA_day, 1, 1)
+        label_MA_day_post = QLabel('天')
+        layout_MA.addWidget(label_MA_day_post, 1, 2)
+
+        label_MA_batch = QLabel('\t分單筆數:')
+        layout_MA.addWidget(label_MA_batch, 1, 3)
+        self.lineEdit_MA_batch = QLineEdit()
+        self.lineEdit_MA_batch.setText(str(2))
+        self.lineEdit_MA_batch.setMaximumWidth(200)
+        layout_MA.addWidget(self.lineEdit_MA_batch, 1, 4)
+        label_MA_batch_post = QLabel('筆')
+        layout_MA.addWidget(label_MA_batch_post, 1, 5)
+
+        label_MA_gap = QLabel('\t分單秒數:')
+        layout_MA.addWidget(label_MA_gap, 1, 6)
+        self.lineEdit_MA_gap = QLineEdit()
+        self.lineEdit_MA_gap.setText(str(30))
+        self.lineEdit_MA_gap.setMaximumWidth(200)
+        layout_MA.addWidget(self.lineEdit_MA_gap, 1, 7)
+        label_MA_gap_post = QLabel('秒')
+        layout_MA.addWidget(label_MA_gap_post, 1, 8)
+
+        label_MA_dummy = QLabel(' '*10)
+        for i in range(9, 20):
+            layout_MA.addWidget(label_MA_dummy, 1, i)
+
+        # 趴數設定區layout
         layout_condition = QGridLayout()
 
         # 監控區layout設定
@@ -130,6 +170,12 @@ class main_ui(QWidget):
         layout_condition.addWidget(self.button_stop, 1, 6, 3, 1)
         self.button_stop.setVisible(False)
         
+        layout_sim = QHBoxLayout()
+        self.button_WS = QPushButton('開始報價')
+        self.button_filled = QPushButton('成交回報')
+        layout_sim.addWidget(self.button_WS)
+        layout_sim.addWidget(self.button_filled)
+
         layout_log = QVBoxLayout()
         # 監控區layout設定
         label_log_text = QLabel('執行日誌')
@@ -143,7 +189,9 @@ class main_ui(QWidget):
 
         layout.addWidget(self.tablewidget, stretch=10)
         # layout.addLayout(layout_table_read)
+        layout.addLayout(layout_MA, stretch=1)
         layout.addLayout(layout_condition, stretch=1)
+        layout.addLayout(layout_sim)
         layout.addLayout(layout_log, stretch=5)
         self.setLayout(layout)
 

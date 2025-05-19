@@ -12,7 +12,8 @@ import threading
 import traceback
 import configparser
 import pandas as pd
-from datetime import datetime
+from datetime import datetime, timedelta
+from dateutil.relativedelta import relativedelta
 
 import fubon_neo
 from fubon_neo.sdk import FubonSDK, Mode, Order
@@ -21,6 +22,40 @@ from fubon_neo.constant import TimeInForce, OrderType, PriceType, MarketType, BS
 from PySide6.QtWidgets import QTableWidgetItem, QFileDialog, QApplication, QWidget, QVBoxLayout, QHBoxLayout, QTableWidget, QGridLayout, QLabel, QLineEdit, QPushButton, QSizePolicy, QPlainTextEdit
 from PySide6.QtGui import QIcon, QTextCursor, QFont
 from PySide6.QtCore import Qt, Signal, QObject
+import certifi
+
+class fake_filled_data:
+    date = "2023/09/15"
+    branch_no = "6460"
+    account = "26"
+    order_no = "bA422"
+    stock_no = "1101"
+    buy_sell = BSAction.Sell
+    filled_no = "00000000001"
+    filled_avg_price = 35.2
+    filled_qty = 1000
+    filled_price = 35.2
+    order_type = OrderType.Stock
+    filled_time = "10:31:00.931"
+    user_def = None
+
+    def __str__(self):
+        indent = "    "  # 縮排的空格
+        return (f"fake_filled_data(\n"
+                f"{indent}date='{self.date}',\n"
+                f"{indent}branch_no='{self.branch_no}',\n"
+                f"{indent}account='{self.account}',\n"
+                f"{indent}order_no='{self.order_no}',\n"
+                f"{indent}stock_no='{self.stock_no}',\n"
+                f"{indent}buy_sell='{self.buy_sell}',\n"
+                f"{indent}filled_no='{self.filled_no}',\n"
+                f"{indent}filled_avg_price={self.filled_avg_price},\n"
+                f"{indent}filled_qty={self.filled_qty},\n"
+                f"{indent}filled_price={self.filled_price},\n"
+                f"{indent}order_type='{self.order_type}',\n"
+                f"{indent}filled_time='{self.filled_time}',\n"
+                f"{indent}user_def='{self.user_def}'\n"
+                f")")
 
 class Communicate(QObject):
     # 定義一個帶參數的信號
@@ -46,7 +81,7 @@ class MainApp(QWidget):
     
         self.setWindowIcon(self.login_handler.windowIcon())
         self.setWindowTitle(self.multi_out_ui.windowTitle())
-        self.resize(1200, 700)
+        self.resize(1300, 700)
 
         # 將 main_ui 的佈局設定到 MainWindow
         self.setLayout(self.multi_out_ui.layout())
@@ -65,8 +100,12 @@ class MainApp(QWidget):
         
         self.inv_rec = AutoSaveDict("inv_rec.json")
         self.trade_config = AutoSaveDict("trade_config.json")
+        self.sma_dict = AutoSaveDict("today_sma.json")
 
         if len(self.trade_config) != 0:
+            self.multi_out_ui.lineEdit_default_MA_day.setText(f"{self.trade_config['ma_period']}")
+            self.multi_out_ui.lineEdit_MA_batch.setText(f"{self.trade_config['ma_batch']}")
+            self.multi_out_ui.lineEdit_MA_gap.setText(f"{self.trade_config['ma_gap']}")
             self.multi_out_ui.lineEdit_default_tp1.setText(f"{self.trade_config['tp1_rate']}")
             self.multi_out_ui.lineEdit_default_tp2.setText(f"{self.trade_config['tp2_rate']}")
             self.multi_out_ui.lineEdit_default_tp3.setText(f"{self.trade_config['tp3_rate']}")
@@ -80,9 +119,17 @@ class MainApp(QWidget):
         self.table_header = self.multi_out_ui.table_header
         self.button_start = self.multi_out_ui.button_start
         self.button_stop = self.multi_out_ui.button_stop
+        
+        # simulated button & slot
+        self.button_WS = self.multi_out_ui.button_WS
+        self.button_filled = self.multi_out_ui.button_filled
+        self.button_WS.clicked.connect(self.fake_ws_data)
+        self.button_filled.clicked.connect(self.fake_filled_data)
 
+        # table control variable
         self.col_idx_map = dict(zip(self.multi_out_ui.table_header, range(len(self.multi_out_ui.table_header))))
         self.row_idx_map = {}
+        self.hist_dfs = {}
 
         # table slot
         self.inv_table.itemChanged.connect(self.on_item_changed)
@@ -99,15 +146,16 @@ class MainApp(QWidget):
         self.is_tp2_ordered = {}
         self.is_tp3_ordered = {}
 
+        self.today = datetime.today()
+        self.today_str = datetime.strftime(self.today, "%Y/%m/%d")
+
         self.init_data_fetch()
 
         order_results = sdk.stock.get_order_results(self.active_account)
 
         self.sdk.set_on_event(self.on_event)
         self.sdk.set_on_filled(self.on_filled)
-
-        # self.today = datetime.today()
-        # self.today_str = datetime.strftime(self.today, "%Y/%m/%d")
+        os.environ['SSL_CERT_FILE'] = certifi.where()
 
         if order_results.is_success:
             self.logger.debug(f"[Recover] Data Fetched {order_results.data}")
@@ -127,35 +175,117 @@ class MainApp(QWidget):
                         triggered_share = int(triggered_share_item.text())
                         triggered_share_item.setText(f"{triggered_share+order_res.after_qty}")
 
-                        filled_share_item = self.inv_table.item(row, self.col_idx_map['成交股數'])
+                        filled_share_item = self.inv_table.item(row, self.col_idx_map['程式成交'])
                         filled_share = int(filled_share_item.text())
                         filled_share_item.setText(f"{filled_share+order_res.filled_qty}")
                         self.logger.debug(f"[Recover][{order_res.stock_no}][{order_res.order_no}][{order_res.after_qty}][{order_res.filled_qty}]")
         else:
             self.logger.error(f"[Recover] 今日委託撈取失敗，{order_results.message}")
 
+    def fake_filled_data(self):
+        for symbol in self.row_idx_map.keys():
+            triggered_item = self.inv_table.item(self.row_idx_map[symbol], self.col_idx_map['觸發股數'])
+            triggered_share = triggered_item.text()
+            filled_item = self.inv_table.item(self.row_idx_map[symbol], self.col_idx_map['程式成交'])
+            filled_share = filled_item.text()
+            phase_item = self.inv_table.item(self.row_idx_map[symbol], self.col_idx_map['出場階段'])
+            out_phase = phase_item.text()
+
+            if triggered_share == '0':
+                continue
+            else:
+                triggered_share = int(triggered_share)
+
+            if filled_share == '0':
+                filled_share = round((triggered_share//1000)/2)
+                filled_share = int(filled_share*1000)
+            else:
+                filled_share = int(filled_share)
+                filled_share = triggered_share - filled_share
+
+            my_fake_filled = fake_filled_data()
+            my_fake_filled.account = self.active_account.account
+            my_fake_filled.stock_no = symbol
+            my_fake_filled.filled_qty = filled_share
+            # my_fake_filled.user_def = self.user_def+out_phase
+            my_fake_filled_user_def = None
+            self.on_filled(None, my_fake_filled)
+    
+    def fake_ws_data(self):
+        json_template = """
+        {{
+            "event": "data",
+            "data": {{
+                "symbol": "{symbol}",
+                "type": "EQUITY",
+                "exchange": "TWSE",
+                "market": "TSE",
+                "bid": 567,
+                "ask": 568,
+                "price": {price},
+                "size": 4778,
+                "volume": 54538,
+                "isClose": true,
+                "time": 1685338200000000,
+                "serial": 6652422
+            }},
+            "id": "<CHANNEL_ID>",
+            "channel": "trades"
+        }}
+        """
+
+        # 替換 symbol 和 price
+        for symbol in self.row_idx_map.keys():
+            price_item = self.inv_table.item(self.row_idx_map[symbol], self.col_idx_map['現價'])
+            if price_item.text() == '-':
+                continue
+            else:
+                price = float(price_item.text())
+            new_price = price + 1
+
+            # 使用 format() 方法替換 (使用關鍵字參數)
+            data_with_format = json_template.format(symbol=symbol, price=new_price)
+            self.handle_message(data_with_format)
 
     def filled_data_update(self, filled_data):
-        symbol = filled_data['stock_no']
-        filled_qty = filled_data['filled_qty']
-        filled_price = filled_data['filled_price']
-        self.logger.info(f"[{symbol}][{filled_data['order_no']}] 成交{filled_qty}股，成交價: {filled_price}")
+        if filled_data['user_def'] == None:
+            filled_data['user_def'] = ''
 
-        row = self.row_idx_map[symbol]
-        filled_share_item = self.inv_table.item(row, self.col_idx_map['成交股數'])
-        old_filled_share = int(filled_share_item.text())
-        cur_filled_share = old_filled_share+filled_qty
-        filled_share_item.setText(f"{cur_filled_share}")
-        triggered_item = self.inv_table.item(row, self.col_idx_map['觸發股數'])
-        triggered_share = int(triggered_item.text())
+        if self.user_def in filled_data['user_def']:
+            symbol = filled_data['stock_no']
+            filled_qty = filled_data['filled_qty']
+            filled_price = filled_data['filled_price']
+            self.logger.info(f"[{symbol}][{filled_data['order_no']}] 程式成交{filled_qty}股，成交價: {filled_price}")
 
-        if cur_filled_share == triggered_share:
-            out_phase_item = self.inv_table.item(row, self.col_idx_map['出場階段'])
-            out_phase = int(out_phase_item.text())
-            out_phase = out_phase+1
-            if out_phase == 4:
-                out_phase = 1
-            out_phase_item.setText(f"{out_phase}")
+            row = self.row_idx_map[symbol]
+            filled_share_item = self.inv_table.item(row, self.col_idx_map['程式成交'])
+            old_filled_share = int(filled_share_item.text())
+            cur_filled_share = old_filled_share+filled_qty
+            filled_share_item.setText(f"{cur_filled_share}")
+            triggered_item = self.inv_table.item(row, self.col_idx_map['觸發股數'])
+            triggered_share = int(triggered_item.text())
+
+            if cur_filled_share == triggered_share:
+                out_phase_item = self.inv_table.item(row, self.col_idx_map['出場階段'])
+                out_phase = int(out_phase_item.text())
+                out_phase = out_phase+1
+                if out_phase == 4:
+                    out_phase = 1
+                out_phase_item.setText(f"{out_phase}")
+        else:
+            symbol = filled_data['stock_no']
+            filled_qty = filled_data['filled_qty']
+            filled_price = filled_data['filled_price']
+
+            if symbol in self.row_idx_map:
+                self.logger.info(f"[{symbol}][{filled_data['order_no']}] 手動成交{filled_qty}股，成交價: {filled_price}")
+
+                row = self.row_idx_map[symbol]
+                filled_share_item = self.inv_table.item(row, self.col_idx_map['手動成交'])
+                old_filled_share = int(filled_share_item.text())
+                cur_filled_share = old_filled_share+filled_qty
+                filled_share_item.setText(f"{cur_filled_share}")
+        
 
     def filled_data_to_dict(self, content):
         filled_dict = {
@@ -180,10 +310,8 @@ class MainApp(QWidget):
     def on_filled(self, err, content):
         self.logger.info(f'[{content.stock_no}][成交] content:{content}')
         if content.account == self.active_account.account:
-            if content.user_def != None:
-                if self.user_def in content.user_def:
-                    cur_filled_data = self.filled_data_to_dict(content)
-                    self.communicator.filled_data_signal.emit(cur_filled_data)
+            cur_filled_data = self.filled_data_to_dict(content)
+            self.communicator.filled_data_signal.emit(cur_filled_data)
 
     def on_event(self, code, msg):
         self.logger.info(f"event: {code}, msg: {msg}")
@@ -192,7 +320,30 @@ class MainApp(QWidget):
                 self.try_relogin()
             else:
                 self.logger.debug("some thread is relogining")
-    
+                
+    def ma_delay_order(self, symbol, out_share, price, base_price, base_pct, order_num=2, sleep_seconds=30):
+        self.logger.info(f"[place_order][{symbol}] 均線之下，全出觸發，{price}/{base_price} 基準漲幅: {base_pct}%，觸發張數: {out_share}")
+        batch_qty = out_share//1000//order_num*1000
+        last_batch_qty = batch_qty+(((out_share//1000) % order_num)*1000)
+
+        for i in range(order_num):
+            if i != order_num-1:
+                tp_res = self.sell_market_order(symbol, batch_qty, f'{self.user_def}ma{i+1}')
+                if tp_res.is_success:
+                    self.logger.info(f"[place_order][{symbol}][{tp_res.data.order_no}] MA{i+1}: {batch_qty}股，委託成功")
+                    self.is_tp1_ordered[symbol] = batch_qty
+                else:
+                    self.logger.error(f"[{symbol}][MA{i+1}] {tp_res.message}, {batch_qty}股")
+            else:
+                tp_res = self.sell_market_order(symbol, last_batch_qty, f'{self.user_def}ma{i+1}')
+                if tp_res.is_success:
+                    self.logger.info(f"[place_order][{symbol}][{tp_res.data.order_no}] MA{i+1} (last): {last_batch_qty}股，委託成功")
+                    self.is_tp1_ordered[symbol] = self.is_tp1_ordered[symbol]+last_batch_qty
+                else:
+                    self.logger.error(f"[{symbol}][MA{i+1}](last): {tp_res.message}, {last_batch_qty}股")
+            
+            time.sleep(sleep_seconds)
+
     # 停損停利用的市價單函式
     def sell_market_order(self, stock_symbol, sell_qty, sl_or_tp='Mout'):
         order = Order(
@@ -239,32 +390,52 @@ class MainApp(QWidget):
 
                 out_phase_item = self.inv_table.item(row, self.col_idx_map['出場階段'])
                 out_phase = out_phase_item.text()
+
+                ma_item = self.inv_table.item(row, self.col_idx_map['均線之下'])
+                ma_status = ma_item.text()
+
                 if out_phase == '1':
                     if base_pct >= self.trade_config['tp1_rate'] and symbol not in self.is_tp1_ordered:
                         lastday_share = int(self.inv_table.item(row, self.col_idx_map['昨日股數']).text())
                         triggered_item = self.inv_table.item(row, self.col_idx_map['觸發股數'])
                         triggered_share = int(triggered_item.text())
-                        available_share = lastday_share - triggered_share
-                        out_share = self.ceil_to_thousand(available_share*self.trade_config['tp1_pct']/100)
-                        if out_share > available_share:
-                            self.logger.error(f"[place_order][{symbol}] 階段 1 觸發，剩餘庫存不足下單 {out_share}/{available_share}")
-                            return
+                        manul_filled = int(self.inv_table.item(row, self.col_idx_map['手動成交']).text())
+                        available_share = lastday_share - triggered_share - manul_filled
 
-                        self.logger.info(f"[place_order][{symbol}] 階段 1 觸發，{price}/{base_price} 基準漲幅: {base_pct}%，觸發張數: {out_share}")
-                        tp_res = self.sell_market_order(symbol, out_share, self.user_def+'1')
-                        if tp_res.is_success:
-                            self.logger.info(f"[place_order][{symbol}][{tp_res.data.order_no}] {out_share}股，委託成功")
-                            self.is_tp1_ordered[symbol] = out_share
-                            triggered_item.setText(f"{triggered_share+out_share}")
-                        else:
-                            self.logger.error(f"[{symbol}] {tp_res.message}")
+                        if ma_status == 'No':
+                            out_share = self.ceil_to_thousand(available_share*self.trade_config['tp1_pct']/100)
+                            if out_share > available_share:
+                                self.logger.error(f"[place_order][{symbol}] 階段 1 觸發，剩餘庫存不足下單 {out_share}/{available_share}")
+                                return
+
+                            self.logger.info(f"[place_order][{symbol}] 階段 1 觸發，{price}/{base_price} 基準漲幅: {base_pct}%，觸發張數: {out_share}")
+                            tp_res = self.sell_market_order(symbol, out_share, self.user_def+'1')
+                            if tp_res.is_success:
+                                self.logger.info(f"[place_order][{symbol}][{tp_res.data.order_no}] {out_share}股，委託成功")
+                                self.is_tp1_ordered[symbol] = out_share
+                                triggered_item.setText(f"{triggered_share+out_share}")
+                            else:
+                                self.logger.error(f"[{symbol}] {tp_res.message}")
+                        elif ma_status == 'Yes':
+                            if available_share < 1000:
+                                self.logger.error(f"[place_order][{symbol}] 均線之下全出觸發，剩餘庫存不足下單，剩餘庫存:{available_share}")
+                                return
+                            
+                            ## ma delay order
+                            ## symbol, out_share, price, base_price, base_pct, sleep_seconds=30
+                            ma_order_thread = threading.Thread(target=self.ma_delay_order, args=(symbol, available_share, price, base_price, base_pct, self.trade_config['ma_batch'], self.trade_config['ma_gap']))
+                            ma_order_thread.start()
+
+                            triggered_item.setText(f"{triggered_share + available_share}")
 
                 elif out_phase == '2':
                     if base_pct >= self.trade_config['tp2_rate'] and symbol not in self.is_tp2_ordered:
                         lastday_share = int(self.inv_table.item(row, self.col_idx_map['昨日股數']).text())
                         triggered_item = self.inv_table.item(row, self.col_idx_map['觸發股數'])
                         triggered_share = int(triggered_item.text())
-                        available_share = lastday_share - triggered_share
+                        manul_filled = int(self.inv_table.item(row, self.col_idx_map['手動成交']).text())
+                        available_share = lastday_share - triggered_share - manul_filled
+
                         out_share = self.ceil_to_thousand(available_share*self.trade_config['tp2_pct']/100)
                         if out_share > available_share:
                             self.logger.error(f"[place_order][{symbol}] 階段 2 觸發，剩餘庫存不足下單 {out_share}/{available_share}")
@@ -284,7 +455,9 @@ class MainApp(QWidget):
                         lastday_share = int(self.inv_table.item(row, self.col_idx_map['昨日股數']).text())
                         triggered_item = self.inv_table.item(row, self.col_idx_map['觸發股數'])
                         triggered_share = int(triggered_item.text())
-                        available_share = lastday_share - triggered_share
+                        manul_filled = int(self.inv_table.item(row, self.col_idx_map['手動成交']).text())
+                        available_share = lastday_share - triggered_share - manul_filled
+
                         out_share = self.ceil_to_thousand(available_share*self.trade_config['tp3_pct']/100)
                         if out_share > available_share:
                             self.logger.error(f"[place_order][{symbol}] 階段 3 觸發，剩餘庫存不足下單 {out_share}/{available_share}")
@@ -402,6 +575,7 @@ class MainApp(QWidget):
         self.wsstock.disconnect()
 
         # 停止執行，開放所有輸入框
+        self.multi_out_ui.lineEdit_default_MA_day.setReadOnly(False)
         self.multi_out_ui.lineEdit_default_tp1.setReadOnly(False)
         self.multi_out_ui.lineEdit_default_tp2.setReadOnly(False)
         self.multi_out_ui.lineEdit_default_tp3.setReadOnly(False)
@@ -424,6 +598,21 @@ class MainApp(QWidget):
         self.button_stop.setVisible(False)
 
     def on_start_clicked(self):
+        if self.inv_hist_fetch_thread.is_alive():
+            self.logger.info("請等待均線計算歷史資料抓取完畢")
+            return
+        
+        try:
+            self.trade_config['ma_period'] = self.multi_out_ui.lineEdit_default_MA_day.text()
+            self.trade_config['ma_period'] = int(self.trade_config['ma_period'])
+            self.trade_config['ma_batch'] = self.multi_out_ui.lineEdit_MA_batch.text()
+            self.trade_config['ma_batch'] = int(self.trade_config['ma_batch'])
+            self.trade_config['ma_gap'] = self.multi_out_ui.lineEdit_MA_gap.text()
+            self.trade_config['ma_gap'] = int(self.trade_config['ma_gap'])
+        except ValueError:
+            self.logger.info("請輸入正確均線參數，僅可為正整數")
+            return
+        
         try:
             self.trade_config['tp1_rate'] = self.multi_out_ui.lineEdit_default_tp1.text()
             self.trade_config['tp2_rate'] = self.multi_out_ui.lineEdit_default_tp2.text()
@@ -447,7 +636,10 @@ class MainApp(QWidget):
         except ValueError:
             self.logger.info("請輸入正確停利百分比和出場百分比，不可空白，僅可為正數")
             return
+        
         # 成功開始，鎖定所有輸入框
+        self.multi_out_ui.lineEdit_default_MA_day.setReadOnly(True)
+
         self.multi_out_ui.lineEdit_default_tp1.setReadOnly(True)
         self.multi_out_ui.lineEdit_default_tp2.setReadOnly(True)
         self.multi_out_ui.lineEdit_default_tp3.setReadOnly(True)
@@ -464,6 +656,16 @@ class MainApp(QWidget):
             out_phase_item = self.inv_table.item(row, self.col_idx_map['出場階段'])
             if out_phase_item:
                 out_phase_item.setFlags(out_phase_item.flags() & ~Qt.ItemFlag.ItemIsEditable)
+        
+        # 計算均線並更新表格
+        for symbol in self.row_idx_map.keys():
+            ma_item = self.inv_table.item(self.row_idx_map[symbol], self.col_idx_map['均線之下'])
+            cur_symbol_sma = self.SMA_cal(symbol, self.trade_config['ma_period'])
+            cur_symbol_yesterday_close = self.hist_dfs[symbol]['close'].iloc[0]
+            if cur_symbol_sma > cur_symbol_yesterday_close:
+                ma_item.setText("Yes")
+            else:
+                ma_item.setText("No")
 
         # 切換執行按鈕
         self.button_start.setVisible(False)
@@ -549,11 +751,15 @@ class MainApp(QWidget):
             self.inv_table.insertRow(row)
             self.row_idx_map[stock_symbol] = row
 
-            # ['股票名稱', '股票代號', '昨日股數', '庫存均價', '基準價', '現價', '基準漲幅(%)', '出場階段', '觸發股數', '成交股數']
+            # ['股票名稱', '股票代號', '昨日股數', '庫存均價', '基準價', '現價', '基準漲幅(%)', '出場階段', '觸發股數', '程式成交']
             for j in range(len(self.table_header)):
                 item = QTableWidgetItem()
                 item.setFlags(item.flags() & ~Qt.ItemIsEditable)
-                if self.table_header[j] == '股票名稱':
+                if self.table_header[j] == '均線之下':
+                    item.setText('-')
+                    item.setTextAlignment(Qt.AlignCenter)
+                    self.inv_table.setItem(row, j, item)
+                elif self.table_header[j] == '股票名稱':
                     item.setText(stock_name)
                     self.inv_table.setItem(row, j, item)
                 elif self.table_header[j] == '股票代號':
@@ -591,7 +797,10 @@ class MainApp(QWidget):
                 elif self.table_header[j] == '觸發股數':
                     item.setText('0')
                     self.inv_table.setItem(row, j, item)
-                elif self.table_header[j] == '成交股數':
+                elif self.table_header[j] == '程式成交':
+                    item.setText('0')
+                    self.inv_table.setItem(row, j, item)
+                elif self.table_header[j] == '手動成交':
                     item.setText('0')
                     self.inv_table.setItem(row, j, item)
 
@@ -624,8 +833,37 @@ class MainApp(QWidget):
                 value = self.inv_rec.pop(key)
                 self.logger.debug(f"[Init] {key} {value} not in current inventory")
 
+        self.logger.info(f"start inv hist fetch thread")
+        self.inv_hist_fetch_thread = threading.Thread(target=self.inv_hist_fetch, args=(inventories, ))
+        self.inv_hist_fetch_thread.start()
+
         self.communicator.table_init_signal.emit(inventories, pnls)
     
+    def SMA_cal(self, symbol, ma_period):
+        sma = self.hist_dfs[symbol].iloc[:ma_period]['close'].mean()
+        sma = round(sma, 2)
+        self.logger.info(f"symbol: {symbol}, SMA{ma_period}: {sma}")
+        return sma
+    
+    def inv_hist_fetch(self, inventories):
+        yesterday = self.today-timedelta(days=1)
+        last_year = self.today-relativedelta(years=1)
+
+        yesterday_date_str = datetime.strftime(yesterday, "%Y-%m-%d")
+        last_year_date_str = datetime.strftime(last_year, "%Y-%m-%d")
+
+        for cur_inv in inventories.keys():
+            cur_symbol_hist = self.hist_fetch(cur_inv, last_year_date_str, yesterday_date_str)
+            self.hist_dfs[cur_inv] = cur_symbol_hist
+        self.logger.info("均線計算歷史資料以抓取完成")
+
+    def hist_fetch(self, symbol, start_date, end_date):
+        self.logger.info(f"fetching {symbol} historical data...")
+        hist_res = self.reststock.historical.candles(**{"symbol": symbol, "from": start_date, "to": end_date})
+        hist_df = pd.DataFrame(hist_res["data"])
+        self.logger.info(f"{symbol} fetch done, {hist_df.shape[0]} records...")
+        return hist_df
+
     # 用Snapshot抓取股票中文名稱
     def stock_name_fetch(self):
         TSE_res = self.reststock.snapshot.quotes(market='TSE')
