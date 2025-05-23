@@ -191,7 +191,7 @@ class main_ui(QWidget):
         # layout.addLayout(layout_table_read)
         layout.addLayout(layout_MA, stretch=1)
         layout.addLayout(layout_condition, stretch=1)
-        layout.addLayout(layout_sim)
+        # layout.addLayout(layout_sim)
         layout.addLayout(layout_log, stretch=5)
         self.setLayout(layout)
 
